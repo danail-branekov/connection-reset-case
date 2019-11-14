@@ -40,7 +40,7 @@ Unfortunately, running processes in a given namespace in Linux is not _that_ tri
 * Finally, the cloned process executes the binary of the requested container process into the container namespace
 > As a matter of fact, things are even more complex, Alexa Sarai explains all the additional complexity in details [here](https://github.com/opencontainers/runc/blob/46def4cc4cb7bae86d8c80cedd43e96708218f0a/libcontainer/nsenter/nsexec.c#L642-L687). Don't worry if you have no idea what he is talking about after reading the explanation for the first time, it took me months to wrap my head around it.
 
-`Runc` needs to keep track on all that machinery so that it eventually returns the PID of the process executed in the container to Garden. All the necessary communication and synchronization is carried out over the aforementioned pipe pairs through special JSON messages.
+`Runc` needs to keep track of all that machinery so that it eventually returns the PID of the process executed in the container to Garden. All the necessary communication and synchronization is carried out over the aforementioned pipe pairs through special JSON messages.
 
 Back to our flake, it seems that for some reason the new container process terminates unexpectedly and therefore the parent process (i.e. `runc`) is getting a `connection reset` while trying to read messages from its child over the pipes pair.
 * Hope level: 0
@@ -69,12 +69,12 @@ Additional logs did not help us find an explanation why the child process dies
 ## 20180918: The corrupted message
 Remember the pipes pairs and the JSON messages parent/child processes talk to each other? If you ever wrote some code utilising JSON communication you know that JSON marshalling/unmarshalling is an inevitable part of the game.
 
-We came across an [old moby issue](https://github.com/moby/moby/issues/14203#issuecomment-174177790), according to the people involved, the writing end of the pipe encodes a new line (`\n`) as last character in the message, but that last character not always gets into the reader's decoding buffer. Therefore it may happen that the reader has reached the last useful character (`}`) of the JSON message and thinks that the message is over. However, it finds an obsolete new line character remaining in the pipe and freaks out. Maybe we could inspect our inter-process communication very-VERY-**VERY** closely and find where such a new line could come from.
+We came across an [old moby issue](https://github.com/moby/moby/issues/14203#issuecomment-174177790); according to the people involved, the writing end of the pipe encodes a new line (`\n`) as last character in the message. But that last character doesn't always get into the reader's decoding buffer. Therefore it may happen that the reader has reached the last useful character (`}`) of the JSON message and thinks that the message is over. However, it finds an obsolete new line character remaining in the pipe and freaks out. Maybe we could inspect our inter-process communication very-VERY-**VERY** closely and find where such a new line could come from.
 * Hope level: 1
 * Desperation level: 10
 
 ## 20180927: Let's get rid of that new line
-The only place `runc` would add an additional new line to the pareht-child JSON message is [this one](https://github.com/opencontainers/runc/blob/aaf210ac5dcf1b26871558cf6532d71772d4cd70/libcontainer/nsenter/nsexec.c#L769). Let's update our custom `runc` build in our CI with a version that has this line removed
+The only place `runc` would add an additional new line to the parent-child JSON message is [here](https://github.com/opencontainers/runc/blob/aaf210ac5dcf1b26871558cf6532d71772d4cd70/libcontainer/nsenter/nsexec.c#L769). Let's update our custom `runc` build in our CI with a version that has this line removed
 * Hope level: 2
 * Desperation level: 10
 
@@ -86,7 +86,7 @@ Well, it happened again...
 ## 20181017: (Get By) With a Little Help from My Friends
 Several days later I have been working on an [unrelated bug](https://github.com/cloudfoundry/garden-runc-release/issues/98) reported by our Diego friends. In short, their tests are fine, however they noticed a go routine leak caused by Garden after running their test suite.
 
-A few hours later we managed to isolate [a test](https://github.com/cloudfoundry/vizzini/blob/7e89abaad7c7a25c122b059f7dc7ac5f5f00df8d/max_pids_test.go#L46-L55) that caused such a go routine leak. The test starts a container with PID limit of `1`, then runs a process and expects that to fail. I am not going to discuss container limits here, but a container with PID limit of `1` means that there cannot be more than one processes running in the container. As a container always has an `init` process (started once the container is created), then its limit is already exhausted, hence failing to run the process makes sense.
+A few hours later we managed to isolate [a test](https://github.com/cloudfoundry/vizzini/blob/7e89abaad7c7a25c122b059f7dc7ac5f5f00df8d/max_pids_test.go#L46-L55) that caused such a goroutine leak. The test starts a container with PID limit of `1`, then runs a process and expects that to fail. I am not going to discuss container limits here, but a container with PID limit of `1` means that there cannot be more than one process running in the container. As a container always has an `init` process (started once the container is created), then its limit is already exhausted, hence failing to run the process makes sense.
 > Setting the maximum number of processes in a container is implemented via the [PID cgroup](https://www.kernel.org/doc/Documentation/cgroup-v1/pids.txt). Each container is created in its own cgroup, setting the PID limit of a container actually writes the limit number into `pids.max` of the container PID cgroup) 
 
 Okay, let's bash a program (full source code [here](./main.go)) that does that, we can check for go routine leaks after it is done:
