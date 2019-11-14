@@ -76,12 +76,6 @@ func createContainer(gardenClient garden.Client, containerName string, pidLimit 
 	})
 }
 
-///*func exitOnError(err error) {
-//	fmt.Printf("Error: %s", err.Error())
-//	os.Exit(1)
-//}
-//*/
-
 func createGardenClient() garden.Client {
 	gardenHost := os.Getenv("GARDEN_ADDRESS")
 	if gardenHost == "" {
