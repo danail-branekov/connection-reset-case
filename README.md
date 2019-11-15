@@ -7,20 +7,20 @@ Today I am going to tell you a story about a flake that felt like an emotional r
 ## Who are we?
 We are Garden, the team that builds the Cloud Foundry container engine. Every time you want **MOAR** resources for your Cloud Foundry application, the container engine is there to give you **MOAR** containers so that your application gets even more **EPIC**.
 
-Containers, especially the Linux ones, are quite exciting themselves. If you are new to containers I would highly recommend reading the [excellent tutorial](https://github.com/georgethebeatle/diycontainers) on DIY containers by my colleague Georgi. In order the article to make sense, you should know that our container engine uses [runc](https://github.com/opencontainers/runc) under the hood to go through most of them Linux hoops.
+Containers, especially the Linux ones, are quite exciting themselves. If you are new to containers I would highly recommend reading the [excellent tutorial](https://github.com/georgethebeatle/diycontainers) on DIY containers by my colleague Georgi. In order for the article to make sense, you should know that our container engine uses [runc](https://github.com/opencontainers/runc) under the hood to go through most of them Linux hoops.
 
 
-The container engine runs on special Cloud Foundry VMs (called _Diego cells_) as a daemon that exposes API to manage containers, such as `create a container`, `delete a container`, `list containers`, `run a process in a container`. Cloud Foundry users usually do not have access to that API, however when they, for example, scale an application up that would eventually result into a `create a container` request to the container engine. The curious reader could have a look at the [Cloud Foundry architecture docs](https://docs.cloudfoundry.org/concepts/architecture/garden.html) for all the nitty-gritty.
+The container engine runs on special Cloud Foundry VMs (called _Diego cells_) as a daemon that exposes an API to manage containers, such as `create a container`, `delete a container`, `list containers`, `run a process in a container`. Cloud Foundry users usually do not have access to that API, however when they, for example, scale an application up, that eventually results into a `create a container` request to the container engine. The curious reader could have a look at the [Cloud Foundry architecture docs](https://docs.cloudfoundry.org/concepts/architecture/garden.html) for all the nitty-gritty.
 
 ## Once upon a time...
 ... there was a continuous integration (CI) environment which ran all Garden automated tests. As Garden is all about containers, most of those tests create at least one container. Even though containers themselves are exciting, they are quite useless if they do not contain anything, that's why tests usually proceed with executing a process in that container. Unfortunately, sometimes process execution would fail with an error:
 ```
 runc exec: exit status 1: exec failed: container_linux.go:348: starting container process caused "read init-p: connection reset by peer"
 ```
-As it was pretty hard to reproduce the failure on our local test environment we wanted to believe that this is _one of those things that do not happen to good people on production_.  Alas, our CI records showed that the failure happened several times per week so we had to bite the bullet and debug the crap out of it.
+As it was pretty hard to reproduce the failure on our local test environment we wanted to believe that this was _one of those things that do not happen to good people on production_.  Alas, our CI records showed that the failure happened several times per week so we had to bite the bullet and debug the crap out of it.
 
 ## 20180806: It can't be a bug in Garden... right?
-At the time those mysterious failures started to show up Garden process execution flow has not been changed since ages. Therefore the most obvious explanation was that we had bumped a dependency of ours thus picking up some else's bugs. And the most obvious culprit was [Golang](https://golang.org/) (one of the languages we use to talk to computers) itself. There was some tribal knowledge that we had not experienced the flake with Golang 1.9.4 so our first shot was to create a test environment running our tests against Golang 1.9.4 for a while just to make sure that the flake is not available there.
+At the time those mysterious failures started to show up, the Garden process execution flow had not been changed since ages. Therefore the most obvious explanation was that we had bumped a dependency of ours thus picking up someone else's bugs. And the most obvious culprit was [Golang](https://golang.org/) (one of the languages we use to talk to computers) itself. There was some tribal knowledge that we had not experienced the flake with Golang 1.9.4 so our first shot was to create a test environment running our tests against Golang 1.9.4 for a while just to make sure that the flake was not available there.
 * Hope level: 1
 * Desperation level: 0
 
@@ -29,10 +29,10 @@ Three days later the flake happened on our Golang 1.9.4 test environment.
 * Hope level: 0
 * Desperation level: 1
 
-## 20180820: Okay, lets try to understand what it going on
-As mentioned above, we had not changed the process execution flow for long so it was time to roll up our sleeves and meet the monsters who dwell in runc. It turned out that the string `init-p` is actually the [name of the parent pipe](https://github.com/opencontainers/runc/blob/46def4cc4cb7bae86d8c80cedd43e96708218f0a/libcontainer/utils/utils_unix.go#L67) (hence `-p`) of pipe pairs that are used by parent processes to talk to their children and vice versa. The error message suggests that there is a parent process getting messages from its child over a _parent_ pipe and occasionally a `connection reset` error occurs while doing so. Indeed, when `runc` executes a new process in the container, it sets up a pipes pair and uses it to talk to the child process.
+## 20180820: Okay, let's try to understand what it going on
+As mentioned above, we had not changed the process execution flow for long, so it was time to roll up our sleeves and meet the monsters who dwell in runc. It turned out that the string `init-p` is actually the [name of the parent pipe](https://github.com/opencontainers/runc/blob/46def4cc4cb7bae86d8c80cedd43e96708218f0a/libcontainer/utils/utils_unix.go#L67) (hence `-p`) of pipe pairs that are used by parent processes to talk to their children and vice versa. The error message suggests that there is a parent process getting messages from its child over a _parent_ pipe and occasionally a `connection reset` error occurs while doing so. Indeed, when `runc` executes a new process in the container, it sets up a pipes pair and uses it to talk to the child process.
 
-Wait a minute, `runc` starting a new process in the container does make lots of sense, but why would it want to talk to it? Why wouldn't `runc` just start a process and just let it be itself and do its processy things? Well, if you have already read the [DIY containers tutorial](https://github.com/georgethebeatle/diycontainers), you already know that processes in a container run in their own namespace (or set of [Linux namespaces](http://man7.org/linux/man-pages/man7/namespaces.7.html), if you want to be technically precise) that has been created when the container is initially created. Therefore when executing a process in the container we want the new process to run in exactly that namespace.
+Wait a minute, `runc` starting a new process in the container does make lots of sense, but why would it want to talk to it? Why wouldn't `runc` just start a process and just let it be itself and do its processy things? Well, if you have already read the [DIY containers tutorial](https://github.com/georgethebeatle/diycontainers), you already know that processes in a container run in their own namespace (or set of [Linux namespaces](http://man7.org/linux/man-pages/man7/namespaces.7.html), if you want to be technically precise) that has been created when the container was initially created. Therefore when executing a process in the container we want the new process to run in exactly that namespace.
 
 Unfortunately, running processes in a given namespace in Linux is not _that_ trivial:
 * First, `runc` needs to [clone](http://man7.org/linux/man-pages/man2/clone.2.html) into a new process which would eventually execute the binary of the process we want to run in the container
@@ -47,7 +47,7 @@ Back to our flake, it seems that for some reason the new container process termi
 * Desperation level: 5 (due to all that process-namespace madness)
 
 ## 20180821 (morning): Maybe someone already fixed that for us? 🤞
-Why wasting time in trying to fix something if someone already did that for us? Let's bump `runc` to latest, hopefully that should do it
+Why wasting time in trying to fix something if someone already did that for us? Let's bump `runc` to latest, hopefully that should do it.
 * Hope level: 1
 * Desperation level: 5
 
@@ -57,12 +57,12 @@ Our CI reproduced the flake almost immediately :(
 * Desperation level: 6
 
 ## 20180822: Logs or it did not happen!
-We find `runc` not really chatty, often puzzling us what a problem could be. We decided that we need to update our reproduction CI environment with a custom `runc` build that produces extra log lines on interesting places. That should give us all the details we need to figure things out!
+We find `runc` not really chatty, often puzzling us about what a problem could be. We decided that we needed to update our reproduction CI environment with a custom `runc` build that produced extra log lines on interesting places. That should have given us all the details we needed to figure things out!
 * Hope level: 1
 * Desperation level: 6
 
 ## ~20180917: Fast-forward about a month
-Additional logs did not help us find an explanation why the child process dies
+Additional logs did not help us to find an explanation of why the child process dies.
 * Hope level: 0
 * Desperation level: 10
 
@@ -187,7 +187,7 @@ In order to prove that we added a sleep of 100ms before the process is joined to
 ## The aftermath
 Once we got to the bottom we had a closer look at the flake history in our CI. And guess what - all the tests that flaked set the container pid limit to `10` or `20`. We should have spotted the pattern earlier, doh!
 
-It is all now clear - you should never set your container limits to ridiculously low values. In the end it turned out that this flake is _one of those things that do not happen to good people on production_ indeed - good people never set their pid limits to `1`
+It is all now clear - you should never set your container limits to ridiculously low values. In the end it turned out that this flake is _one of those things that do not happen to good people on production_ indeed - good people never set their pid limits to `1`.
 
 As usual, we make the world a better place, so we raised this ["documentation issue"](https://github.com/opencontainers/runc/issues/1914) with `runc` to share the knowledge with the community.
 
