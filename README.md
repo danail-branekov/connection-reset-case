@@ -196,7 +196,7 @@ As per the flake itself - we just had to [increase the pid limit to 50](https://
 ## Closing Credits
 This write-up would have never been written without the help and support of all gardeners, at time of this thriller
 * Claudia Beresford
-* Julia Nedialkova
+* Yulia Nedyalkova
 * Georgi Sabev
 * Tom Godkin
 * Giuseppe Capizzi
