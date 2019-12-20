@@ -89,7 +89,7 @@ Several days later I have been working on an [unrelated bug](https://github.com/
 A few hours later we managed to isolate [a test](https://github.com/cloudfoundry/vizzini/blob/7e89abaad7c7a25c122b059f7dc7ac5f5f00df8d/max_pids_test.go#L46-L55) that caused such a goroutine leak. The test starts a container with PID limit of `1`, then runs a process and expects that to fail. I am not going to discuss container limits here, but a container with PID limit of `1` means that there cannot be more than one process running in the container. As a container always has an `init` process (started once the container is created), then its limit is already exhausted, hence failing to run the process makes sense.
 > Setting the maximum number of processes in a container is implemented via the [PID cgroup](https://www.kernel.org/doc/Documentation/cgroup-v1/pids.txt). Each container is created in its own cgroup, setting the PID limit of a container actually writes the limit number into `pids.max` of the container PID cgroup) 
 
-Okay, let's bash a program (full source code [here](./main.go)) that does that, we can check for go routine leaks after it is done:
+Okay, let's bash a program (full source code [here](./main.go)) that does that, we can check for go routine leaks after it is done (the single parameter of the program determines the PID limit):
 ```go
 func main() {
     // Boring initializations
@@ -177,6 +177,7 @@ After some digging in the runc code and various experimental programs in C we fo
 * There is a race in `runc`
     * the new process is started without being waited for ([here](https://github.com/opencontainers/runc/blob/c2ab1e656e7af78bde396511be003b9903f004a3/libcontainer/process_linux.go#L76))
     * as the process runs, `runc` would put the processes into the limited container cgroup ([here](https://github.com/opencontainers/runc/blob/c2ab1e656e7af78bde396511be003b9903f004a3/libcontainer/process_linux.go#L90-L92))
+
 The conditions above create a race where the process can join the restricted cgroup too early while the Golang runtime is initializing and creating its internal threads
 
 In order to prove that we added a sleep of 100ms before the process is joined to the cgroup and this significantly reduced the failure rate when the PID limit is `7`. Removing the code that joins the cgroup "fixed" it entirely.
